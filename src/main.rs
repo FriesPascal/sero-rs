@@ -15,6 +15,7 @@ async fn main() -> Result<()> {
 
     let listen_address = "0.0.0.0:3000";
     let backend_address = "5.75.231.232:30458";
+
     let target_deploy = "wasm-spin";
 
     let listener = TcpListener::bind(&listen_address).await?;

@@ -11,6 +11,8 @@ use tracing::debug;
 pub async fn scale_deploy(name: &str, replicas: i32, ready_timeout: Duration) -> Result<()> {
     debug!("Connecting to kube api in order to scale up.");
     let client = Client::try_default().await?;
+    debug!("Successfully connected to kube api.");
+
     let deploy: Api<Deployment> = Api::default_namespaced(client);
     let scale: Scale = serde_json::from_value(json!({
         "apiVersion": "autoscaling/v1",
