@@ -5,9 +5,9 @@ use std::sync::Arc;
 use tokio::{
     net::{TcpListener, TcpStream},
     sync::Notify,
-    time::Duration,
+    time::{self, Duration},
 };
-use tracing::{error, info, trace};
+use tracing::*;
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -15,10 +15,8 @@ async fn main() -> Result<()> {
 
     let listen_address = "0.0.0.0:3000";
     let backend_address = "5.75.231.232:30458";
-
     let target_deploy = "wasm-spin";
-
-    let listener = TcpListener::bind(&listen_address).await?;
+    let target_svc = "wasm-spin";
 
     info!("Listening on {listen_address}.");
     info!("Proxying requests to {backend_address}.");
@@ -33,12 +31,14 @@ async fn main() -> Result<()> {
         tokio::spawn(async move {
             loop {
                 backend_unavailable.notified().await;
-                info!("Got a request to a backend that is unreachable. Trying to scale up.");
-                while let Err(e) =
-                    scaler::scale_deploy("wasm-spin", 1, Duration::from_secs(10)).await
-                {
-                    error!("Failed to scale up: {e}");
+                info!("Got a request to a backend that is unreachable. Scaling to 1.");
+
+                let retry_secs: u64 = 10;
+                while let Err(e) = scaler::scale_up(target_deploy, target_svc).await {
+                    error!("Failed scaling (retry in {retry_secs}s): {e}");
+                    time::sleep(Duration::from_secs(retry_secs)).await;
                 }
+
                 backend_available.notify_waiters();
                 info!("Backend is up again.");
             }
@@ -46,28 +46,58 @@ async fn main() -> Result<()> {
     }
 
     // handle incoming connections
-    while let Ok((ingress, _)) = listener.accept().await {
-        let backend_unavailable = backend_unavailable.clone();
-        let backend_available = backend_available.clone();
-        // span a new task to handle the connection
-        tokio::spawn(async move {
-            loop {
-                match TcpStream::connect(&backend_address).await {
-                    Ok(backend) => {
-                        trace!("Successfully connected to backend. Proxying packets.");
-                        proxy_connection(ingress, backend).await;
-                        break;
-                    }
-                    Err(_) => {
-                        backend_unavailable.notify_one();
-                        backend_available.notified().await;
-                    }
-                };
-            }
-        });
-    }
+    let listener = TcpListener::bind(&listen_address).await?;
+    tokio::spawn(async move {
+        while let Ok((ingress, _)) = listener.accept().await {
+            let backend_unavailable = backend_unavailable.clone();
+            let backend_available = backend_available.clone();
+            // span a new task to handle the connection
+            tokio::spawn(async move {
+                loop {
+                    match TcpStream::connect(&backend_address).await {
+                        Ok(backend) => {
+                            trace!("Successfully connected to backend. Proxying packets.");
+                            proxy_connection(ingress, backend).await;
+                            break;
+                        }
+                        Err(_) => {
+                            backend_unavailable.notify_one();
+                            backend_available.notified().await;
+                        }
+                    };
+                }
+            });
+        }
+    });
+
+    graceful_shutdown().await;
 
     Ok(())
+}
+
+async fn graceful_shutdown() {
+    use tokio::signal;
+
+    let ctrl_c = async {
+        match signal::ctrl_c().await {
+            Ok(_) => info!("Received C-c, shutting down."),
+            Err(err) => error!("Unable to listen for shutdown signal: {}", err),
+        };
+    };
+
+    let terminate = async {
+        match signal::unix::signal(signal::unix::SignalKind::terminate()) {
+            Ok(mut s) => {
+                s.recv().await;
+            }
+            Err(err) => error!("Unable to listen for shutdown signal: {}", err),
+        }
+    };
+
+    tokio::select! {
+        _ = ctrl_c => {},
+        _ = terminate => {},
+    }
 }
 
 async fn proxy_connection(mut ingress: TcpStream, mut backend: TcpStream) {
