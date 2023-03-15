@@ -15,7 +15,7 @@ WORKDIR /src
 COPY . .
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/src/target \
-    cargo build --target x86_64-unknown-linux-musl && \
+    cargo build --target x86_64-unknown-linux-musl --profile $PROFILE && \
     mkdir -p /target && \
     cp /src/target/x86_64-unknown-linux-musl/$PROFILE/sero /target/
 
