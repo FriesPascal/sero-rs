@@ -1,6 +1,10 @@
+mod cli;
+mod proxy;
 mod scaler;
 
 use anyhow::Result;
+use clap::Parser;
+use cli::Cli;
 use std::sync::Arc;
 use tokio::{
     net::{TcpListener, TcpStream},
@@ -13,14 +17,17 @@ use tracing::*;
 async fn main() -> Result<()> {
     tracing_subscriber::fmt::init();
 
-    let listen_address = "0.0.0.0:3000";
-    let backend_address = "5.75.231.232:30458";
-    let target_deploy = "wasm-spin";
-    let target_svc = "wasm-spin";
+    let Cli {
+        listen_address,
+        backend_address,
+        target_deploy,
+        target_svc,
+    } = Cli::parse();
 
     info!("Listening on {listen_address}.");
     info!("Proxying requests to {backend_address}.");
     info!("Target deployment is {target_deploy}.");
+    info!("Target service is {target_svc}.");
 
     let backend_unavailable = Arc::new(Notify::new());
     let backend_available = Arc::new(Notify::new());
@@ -34,7 +41,7 @@ async fn main() -> Result<()> {
                 info!("Got a request to a backend that is unreachable. Scaling to 1.");
 
                 let retry_secs: u64 = 10;
-                while let Err(e) = scaler::scale_up(target_deploy, target_svc).await {
+                while let Err(e) = scaler::scale_up(&target_deploy, &target_svc).await {
                     error!("Failed scaling (retry in {retry_secs}s): {e}");
                     time::sleep(Duration::from_secs(retry_secs)).await;
                 }
@@ -51,13 +58,14 @@ async fn main() -> Result<()> {
         while let Ok((ingress, _)) = listener.accept().await {
             let backend_unavailable = backend_unavailable.clone();
             let backend_available = backend_available.clone();
+            let backend_address = backend_address.clone();
             // span a new task to handle the connection
             tokio::spawn(async move {
                 loop {
                     match TcpStream::connect(&backend_address).await {
                         Ok(backend) => {
                             trace!("Successfully connected to backend. Proxying packets.");
-                            proxy_connection(ingress, backend).await;
+                            proxy::proxy_tcp_connection(ingress, backend).await;
                             break;
                         }
                         Err(_) => {
@@ -97,16 +105,5 @@ async fn graceful_shutdown() {
     tokio::select! {
         _ = ctrl_c => {},
         _ = terminate => {},
-    }
-}
-
-async fn proxy_connection(mut ingress: TcpStream, mut backend: TcpStream) {
-    match tokio::io::copy_bidirectional(&mut ingress, &mut backend).await {
-        Ok((bytes_to_backend, bytes_from_backend)) => {
-            trace!("Connection ended gracefully ({bytes_to_backend} bytes from client, {bytes_from_backend} bytes from server)");
-        }
-        Err(e) => {
-            error!("Error while proxying: {e}");
-        }
     }
 }
