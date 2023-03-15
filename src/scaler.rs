@@ -1,4 +1,4 @@
-use anyhow::Result;
+use anyhow::{Context, Result};
 use futures::{pin_mut, TryStreamExt};
 use k8s_openapi::api::{
     apps::v1::Deployment, autoscaling::v1::Scale, discovery::v1::EndpointSlice,
@@ -14,10 +14,29 @@ use tracing::*;
 
 /// Scale up.
 pub async fn scale_up(target_deploy: &str, target_svc: &str) -> Result<()> {
-    scale_deploy(target_deploy, 1).await?;
-    wait_for_target_endpoints(target_svc).await?;
+    // Only scale up if there are currently no replicas.
+    if get_replicas(target_deploy).await? < 1 {
+        scale_deploy(target_deploy, 1).await?;
+    } else {
+        warn!("Got a message to scale up even though there are replicas.");
+    }
 
-    Ok(())
+    // in any case, wait for endpoints
+    debug!("Waiting for service/{target_svc} to have serving endpoints.");
+    wait_for_target_endpoints(target_svc).await
+}
+
+/// Get number of replicas of a deployment.
+async fn get_replicas(name: &str) -> Result<i32> {
+    let client = Client::try_default().await?;
+    let deploy: Api<Deployment> = Api::default_namespaced(client);
+    deploy
+        .get_scale(name)
+        .await?
+        .spec
+        .context("Deployment has no ScaleSpec.")?
+        .replicas
+        .context("Deployment has no replicas defined.")
 }
 
 /// Scale a deployment. Returns Ok(()) if everything went well.

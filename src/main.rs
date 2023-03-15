@@ -36,12 +36,13 @@ async fn main() -> Result<()> {
     let backend_available = Arc::new(Notify::new());
 
     // handle signals to scale deploy
+    let scaler_timeout = 10u64;
     tokio::spawn(run_scaler(
         backend_unavailable.clone(),
         backend_available.clone(),
         target_deploy,
         target_svc,
-        10u64,
+        scaler_timeout,
     ));
 
     // handle incoming connections
@@ -50,7 +51,7 @@ async fn main() -> Result<()> {
         listener,
         backend_unavailable,
         backend_available,
-        backend_address.clone(),
+        backend_address,
     ));
 
     // wait for signal to gracefully exit
@@ -68,10 +69,10 @@ async fn run_scaler(
 ) {
     loop {
         unavailable.notified().await;
-        info!("Got a request to a backend that is unreachable. Scaling to 1.");
+        info!("Got a request to a backend that is unreachable.");
 
         while let Err(e) = scaler::scale_up(&deploy, &svc).await {
-            error!("Failed scaling (retry in {retry_secs}s): {e}");
+            error!("Failed scale up routine (retry in {retry_secs}s): {e}");
             time::sleep(Duration::from_secs(retry_secs)).await;
         }
 
