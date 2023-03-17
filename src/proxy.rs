@@ -2,6 +2,7 @@ use std::sync::Arc;
 use tokio::{
     net::{TcpListener, TcpStream},
     sync::Notify,
+    time::{self, Duration},
 };
 use tracing::*;
 
@@ -16,6 +17,9 @@ pub async fn run_proxy(
     unavailable: Arc<Notify>,
     available: Arc<Notify>,
 ) {
+    // say hello
+    info!("Listening on {listen_address}, proxying requests to {backend_address}.");
+
     // listen on `listen_address`
     let listener = TcpListener::bind(&listen_address)
         .await
@@ -28,19 +32,22 @@ pub async fn run_proxy(
         let backend_address = backend_address.clone();
         // span a new task to handle the connection
         tokio::spawn(async move {
+            // try connecting to backend and proxy. if connection times out or is
+            // refused, mark backend as unavailable and wait until available again
             loop {
-                match TcpStream::connect(&backend_address).await {
-                    Ok(backend) => {
-                        trace!("Successfully connected to backend. Proxying packets.");
-                        proxy_tcp_connection(ingress, backend).await;
-                        break;
-                    }
-                    Err(_) => {
-                        unavailable.notify_one();
-                        debug!("Got a request to a backend that is unreachable.");
-                        available.notified().await;
-                    }
-                };
+                if let Ok(Ok(backend)) = time::timeout(
+                    Duration::from_secs(1u64),
+                    TcpStream::connect(&backend_address),
+                )
+                .await
+                {
+                    trace!("Successfully connected to backend. Proxying connections.");
+                    proxy_tcp_connection(ingress, backend).await;
+                    break;
+                }
+                debug!("Error connecting to backend. Marking as unavailable and wait until available again.");
+                unavailable.notify_one();
+                available.notified().await;
             }
         });
     }

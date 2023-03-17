@@ -34,8 +34,22 @@ pub async fn run_scaler(
     wait_secs: u64,
     retry_secs: u64,
 ) {
+    // say hello
+    info!("Targetting deployment/{deploy_name} and service/{svc_name}.");
+
+    // make sure we can reach the kube api
+    let client = Arc::new(
+        Client::try_default()
+            .await
+            .map_err(|e| {
+                error!("Error setting up a kube api client: {e}");
+                std::process::exit(255);
+            })
+            .unwrap(),
+    );
+
     let watch_svc = async {
-        while let Err(e) = watch_target_svc(&deploy_name, available.clone()).await {
+        while let Err(e) = watch_target_svc(&deploy_name, available.clone(), client.clone()).await {
             error!(
                 "Failed watching endpoints for service/{svc_name} (retry in {retry_secs}s): {e}"
             );
@@ -48,7 +62,7 @@ pub async fn run_scaler(
             // only act when backend is marked as unavailable
             unavailable.notified().await;
 
-            while let Err(e) = scale_up(&deploy_name).await {
+            while let Err(e) = scale_up(&deploy_name, client.clone()).await {
                 error!("Failed scaling up deployment/{deploy_name} (retry in {retry_secs}s): {e}");
                 time::sleep(Duration::from_secs(retry_secs)).await;
             }
@@ -63,7 +77,7 @@ pub async fn run_scaler(
             info!("Waiting {wait_secs}s until scaling down.");
             time::sleep(Duration::from_secs(wait_secs)).await;
 
-            while let Err(e) = scale_down(&deploy_name).await {
+            while let Err(e) = scale_down(&deploy_name, client.clone()).await {
                 error!(
                     "Failed scaling down deployment/{deploy_name} (retry in {retry_secs}s): {e}"
                 );
@@ -79,9 +93,8 @@ pub async fn run_scaler(
 /// Watch the kube api for EndpointSlices associated to service with name `svc_name`.
 /// Notifies all waiters of `barker` whenever there occurs an event stating that there
 /// at least one `serving` endpoint.
-async fn watch_target_svc(svc_name: &str, barker: Arc<Notify>) -> Result<()> {
-    let client = Client::try_default().await?;
-    let ep_slice: Api<EndpointSlice> = Api::default_namespaced(client);
+async fn watch_target_svc(svc_name: &str, barker: Arc<Notify>, client: Arc<Client>) -> Result<()> {
+    let ep_slice: Api<EndpointSlice> = Api::default_namespaced((*client).clone());
     let label_selector =
         ListParams::default().labels(&format!("kubernetes.io/service-name={svc_name}"));
     let ep_slice_events = runtime::watcher(ep_slice, label_selector).applied_objects();
@@ -108,9 +121,9 @@ async fn watch_target_svc(svc_name: &str, barker: Arc<Notify>) -> Result<()> {
 }
 
 /// Scale up if there are currently no replicas.
-async fn scale_up(deploy_name: &str) -> Result<()> {
-    if get_deploy_replicas(deploy_name).await? < 1 {
-        scale_deploy(deploy_name, 1).await?;
+async fn scale_up(deploy_name: &str, client: Arc<Client>) -> Result<()> {
+    if get_deploy_replicas(deploy_name, client.clone()).await? < 1 {
+        scale_deploy(deploy_name, 1, client).await?;
     } else {
         warn!("Got a message to scale up even though there are replicas.");
     }
@@ -118,17 +131,16 @@ async fn scale_up(deploy_name: &str) -> Result<()> {
 }
 
 /// Scale down to zero, warning if there are currently more than one replicas.
-async fn scale_down(deploy_name: &str) -> Result<()> {
-    if get_deploy_replicas(deploy_name).await? > 1 {
+async fn scale_down(deploy_name: &str, client: Arc<Client>) -> Result<()> {
+    if get_deploy_replicas(deploy_name, client.clone()).await? > 1 {
         warn!("Got a message to scale down even though there are multiple replicas.");
     }
-    scale_deploy(deploy_name, 0).await
+    scale_deploy(deploy_name, 0, client).await
 }
 
 /// Get number of replicas of a deployment.
-async fn get_deploy_replicas(name: &str) -> Result<i32> {
-    let client = Client::try_default().await?;
-    let deploy: Api<Deployment> = Api::default_namespaced(client);
+async fn get_deploy_replicas(name: &str, client: Arc<Client>) -> Result<i32> {
+    let deploy: Api<Deployment> = Api::default_namespaced((*client).clone());
     let replicas = deploy
         .get_scale(name)
         .await?
@@ -140,9 +152,8 @@ async fn get_deploy_replicas(name: &str) -> Result<i32> {
 }
 
 /// Scale a deployment.
-async fn scale_deploy(name: &str, replicas: i32) -> Result<()> {
-    let client = Client::try_default().await?;
-    let deploy: Api<Deployment> = Api::default_namespaced(client);
+async fn scale_deploy(name: &str, replicas: i32, client: Arc<Client>) -> Result<()> {
+    let deploy: Api<Deployment> = Api::default_namespaced((*client).clone());
     let scale: Scale = serde_json::from_value(json!({
         "apiVersion": "autoscaling/v1",
         "kind": "Scale",

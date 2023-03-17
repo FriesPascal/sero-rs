@@ -19,27 +19,22 @@ async fn main() -> Result<()> {
         backend_address,
         target_deploy,
         target_svc,
+        retry_seconds,
     } = Cli::parse();
-    let scaler_timeout = 10u64;
-    let scaler_wait = 60u64;
-
-    info!("Listening on {}.", &listen_address);
-    info!("Proxying requests to {}.", &backend_address);
-    info!("Target deployment is {}.", &target_deploy);
-    info!("Target service is {}.", &target_svc);
 
     // initialise channels for inter-task communication
     let backend_unavailable = Arc::new(Notify::new());
     let backend_available = Arc::new(Notify::new());
 
     // autoscale backend
+    let wait_seconds = 60u64;
     tokio::spawn(scaler::run_scaler(
         backend_unavailable.clone(),
         backend_available.clone(),
         target_deploy.clone(),
         target_svc,
-        scaler_wait,
-        scaler_timeout,
+        wait_seconds,
+        retry_seconds,
     ));
 
     // handle incoming connections
