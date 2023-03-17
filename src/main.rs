@@ -6,25 +6,22 @@ use anyhow::Result;
 use clap::Parser;
 use cli::Cli;
 use std::sync::Arc;
-use tokio::{
-    net::{TcpListener, TcpStream},
-    signal,
-    sync::Notify,
-    time::{self, Duration},
-};
+use tokio::{signal, sync::Notify};
 use tracing::*;
 
 #[tokio::main]
 async fn main() -> Result<()> {
     tracing_subscriber::fmt::init();
 
-    // get cli params
+    // get params
     let Cli {
         listen_address,
         backend_address,
         target_deploy,
         target_svc,
     } = Cli::parse();
+    let scaler_timeout = 10u64;
+    let scaler_wait = 60u64;
 
     info!("Listening on {}.", &listen_address);
     info!("Proxying requests to {}.", &backend_address);
@@ -35,79 +32,28 @@ async fn main() -> Result<()> {
     let backend_unavailable = Arc::new(Notify::new());
     let backend_available = Arc::new(Notify::new());
 
-    // handle signals to scale deploy
-    let scaler_timeout = 10u64;
-    tokio::spawn(run_scaler(
+    // autoscale backend
+    tokio::spawn(scaler::run_scaler(
         backend_unavailable.clone(),
         backend_available.clone(),
-        target_deploy,
+        target_deploy.clone(),
         target_svc,
+        scaler_wait,
         scaler_timeout,
     ));
 
     // handle incoming connections
-    let listener = TcpListener::bind(&listen_address).await?;
-    tokio::spawn(run_proxy(
-        listener,
+    tokio::spawn(proxy::run_proxy(
+        listen_address,
+        backend_address,
         backend_unavailable,
         backend_available,
-        backend_address,
     ));
 
     // wait for signal to gracefully exit
     graceful_shutdown().await;
 
     Ok(())
-}
-
-async fn run_scaler(
-    unavailable: Arc<Notify>,
-    available: Arc<Notify>,
-    deploy: String,
-    svc: String,
-    retry_secs: u64,
-) {
-    loop {
-        unavailable.notified().await;
-        info!("Got a request to a backend that is unreachable.");
-
-        while let Err(e) = scaler::scale_up(&deploy, &svc).await {
-            error!("Failed scale up routine (retry in {retry_secs}s): {e}");
-            time::sleep(Duration::from_secs(retry_secs)).await;
-        }
-
-        available.notify_waiters();
-        info!("Backend is up again.");
-    }
-}
-
-async fn run_proxy(
-    listener: TcpListener,
-    unavailable: Arc<Notify>,
-    available: Arc<Notify>,
-    backend_address: String,
-) {
-    while let Ok((ingress, _)) = listener.accept().await {
-        let unavailable = unavailable.clone();
-        let available = available.clone();
-        let backend_address = backend_address.clone();
-        // span a new task to handle the connection
-        tokio::spawn(async move {
-            loop {
-                match TcpStream::connect(&backend_address).await {
-                    Ok(backend) => {
-                        trace!("Successfully connected to backend. Proxying packets.");
-                        proxy::proxy_tcp_connection(ingress, backend).await;
-                        break;
-                    }
-                    Err(_) => {
-                        unavailable.notify_one();
-                        available.notified().await;
-                    }
-                };
-            }
-        });
-    }
 }
 
 async fn graceful_shutdown() {
