@@ -28,6 +28,7 @@ async fn main() -> Result<()> {
 
     // set up a kube api client
     let client = Arc::new(Client::try_default().await?);
+    info!("Successfully connected to Kube API.");
 
     // watch target endpoints
     let endpoints = EndpointWatcherHandle::new(&target_svc, client.clone());

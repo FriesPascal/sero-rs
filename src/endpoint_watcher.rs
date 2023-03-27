@@ -24,7 +24,6 @@ impl From<(usize, usize)> for EndpointCount {
 }
 
 struct EndpointWatcher {
-    svc_name: String,
     sender: watch::Sender<EndpointCount>,
     store: Store<EndpointSlice>,
     events: Pin<Box<dyn Stream<Item = Result<EndpointSlice, runtime::watcher::Error>> + Send>>,
@@ -40,8 +39,12 @@ impl EndpointWatcher {
             .touched_objects()
             .boxed();
 
+        info!(
+            "Watching EndpointSlices associated to service/{}.",
+            svc_name
+        );
+
         EndpointWatcher {
-            svc_name: svc_name.to_owned(),
             sender,
             store,
             events,
@@ -51,14 +54,10 @@ impl EndpointWatcher {
     async fn run(mut self) {
         while let Some(event) = self.events.next().await {
             match event {
-                Err(e) => error!(
-                    "Error getting next event for EndpointSlices associated to service/{}: {e}",
-                    self.svc_name
-                ),
+                Err(e) => error!("Error getting next event for EndpointSlices: {e}"),
                 Ok(ep_slice) => {
                     debug!(
-                        "Got a new event for EndpointSlices associated to service/{}: {}",
-                        self.svc_name,
+                        "Got a new event for EndpointSlices: {}",
                         serde_json::to_string(&ep_slice)
                             .unwrap_or("Error serialising event.".to_owned())
                     );
