@@ -1,12 +1,17 @@
 mod cli;
+mod endpoint_watcher;
 mod proxy;
 mod scaler;
 
 use anyhow::Result;
 use clap::Parser;
 use cli::Cli;
+use endpoint_watcher::EndpointWatcherHandle;
+use kube::Client;
+use proxy::Proxy;
+use scaler::ScalerHandle;
 use std::sync::Arc;
-use tokio::{signal, sync::Notify};
+use tokio::signal;
 use tracing::*;
 
 #[tokio::main]
@@ -19,31 +24,26 @@ async fn main() -> Result<()> {
         backend_address,
         target_deploy,
         target_svc,
-        retry_seconds,
     } = Cli::parse();
 
-    // initialise channels for inter-task communication
-    let backend_unavailable = Arc::new(Notify::new());
-    let backend_available = Arc::new(Notify::new());
+    // set up a kube api client
+    let client = Arc::new(Client::try_default().await?);
 
-    // autoscale backend
-    let wait_seconds = 60u64;
-    tokio::spawn(scaler::run_scaler(
-        backend_unavailable.clone(),
-        backend_available.clone(),
-        target_deploy.clone(),
-        target_svc,
-        wait_seconds,
-        retry_seconds,
-    ));
+    // watch target endpoints
+    let endpoints = EndpointWatcherHandle::new(&target_svc, client.clone());
 
-    // handle incoming connections
-    tokio::spawn(proxy::run_proxy(
-        listen_address,
-        backend_address,
-        backend_unavailable,
-        backend_available,
-    ));
+    // scale backend
+    let max_concurrency = 512;
+    let scaler = ScalerHandle::new(
+        max_concurrency,
+        &target_deploy,
+        client.clone(),
+        endpoints.clone(),
+    );
+
+    // proxy connections
+    let proxy = Proxy::try_new(&listen_address, &backend_address, scaler.clone()).await?;
+    tokio::spawn(proxy.run());
 
     // wait for signal to gracefully exit
     graceful_shutdown().await;

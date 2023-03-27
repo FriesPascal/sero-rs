@@ -18,8 +18,7 @@ pub struct Cli {
     /// Service to watch for endpoints
     #[arg(env, short = 's', long, value_name = "NAME")]
     pub target_svc: String,
-
-    /// Time to wait before retrying on API errors
-    #[arg(env, long, value_name = "TIME", default_value_t = 10u64)]
-    pub retry_seconds: u64,
+    //    /// Time to wait before retrying on API errors
+    //    #[arg(env, long, value_name = "TIME", default_value_t = 10u64)]
+    //    pub retry_seconds: u64,
 }
