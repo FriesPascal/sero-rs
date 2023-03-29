@@ -24,13 +24,20 @@ impl From<(usize, usize)> for EndpointCount {
 }
 
 struct EndpointWatcher {
+    name: String,
+    port_name: String,
     sender: watch::Sender<EndpointCount>,
     store: Store<EndpointSlice>,
     events: Pin<Box<dyn Stream<Item = Result<EndpointSlice, runtime::watcher::Error>> + Send>>,
 }
 
 impl EndpointWatcher {
-    fn new(svc_name: &str, sender: watch::Sender<EndpointCount>, client: Arc<Client>) -> Self {
+    fn new(
+        svc_name: &str,
+        svc_port_name: &str,
+        sender: watch::Sender<EndpointCount>,
+        client: Arc<Client>,
+    ) -> Self {
         let api: Api<EndpointSlice> = Api::default_namespaced((*client).clone());
         let selector =
             ListParams::default().labels(&format!("kubernetes.io/service-name={svc_name}"));
@@ -45,6 +52,8 @@ impl EndpointWatcher {
         );
 
         EndpointWatcher {
+            name: svc_name.to_owned(),
+            port_name: svc_port_name.to_owned(),
             sender,
             store,
             events,
@@ -83,6 +92,13 @@ impl EndpointWatcher {
         self.store
             .state()
             .iter()
+            .filter(|ep_slice| {
+                ep_slice.ports.as_ref().map(|ports| {
+                    ports
+                        .iter()
+                        .any(|port| port.name == Some(self.port_name.clone()))
+                }) == Some(true)
+            })
             .fold((0_usize, 0_usize), |(sero, backend), ep_slice| {
                 let serving_ep = ep_slice
                     .endpoints
@@ -98,8 +114,8 @@ impl EndpointWatcher {
                     .metadata
                     .labels
                     .as_ref()
-                    .map(|labels| labels.contains_key("endpoints.sero.rs/managed-by"))
-                    == Some(true)
+                    .and_then(|labels| labels.get("endpointslices.sero.rs/service-name"))
+                    == Some(&self.name)
                 {
                     (sero + serving_ep, backend)
                 } else {
@@ -116,9 +132,9 @@ pub struct EndpointWatcherHandle {
 }
 
 impl EndpointWatcherHandle {
-    pub fn new(svc_name: &str, client: Arc<Client>) -> Self {
+    pub fn new(svc_name: &str, svc_port_name: &str, client: Arc<Client>) -> Self {
         let (sender, receiver) = watch::channel(EndpointCount::default());
-        let watcher = EndpointWatcher::new(svc_name, sender, client);
+        let watcher = EndpointWatcher::new(svc_name, svc_port_name, sender, client);
         tokio::spawn(watcher.run());
         EndpointWatcherHandle { receiver }
     }

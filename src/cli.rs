@@ -4,21 +4,26 @@ use clap::Parser;
 #[command(author, version, about, long_about = None)]
 pub struct Cli {
     /// Listen on this address
-    #[arg(env, long, value_name = "HOST:PORT", default_value = "0.0.0.0:3000")]
-    pub listen_address: String,
+    #[arg(env, long, default_value = "0.0.0.0", value_name = "HOST")]
+    pub listen_host: String,
 
-    /// Proxy connections to this address
-    #[arg(env, short, long, value_name = "HOST:PORT")]
-    pub backend_address: String,
+    /// Listen on this port
+    #[arg(env, long, default_value_t = 3000, value_name = "PORT")]
+    pub listen_port: u16,
 
     /// Deployment to scale
-    #[arg(env, short = 'd', long, value_name = "NAME")]
-    pub target_deploy: String,
+    #[arg(env = "DEPLOYMENT", short = 'd', long, value_name = "NAME")]
+    pub deployment: String,
 
-    /// Service to watch for endpoints
-    #[arg(env, short = 's', long, value_name = "NAME")]
-    pub target_svc: String,
-    //    /// Time to wait before retrying on API errors
-    //    #[arg(env, long, value_name = "TIME", default_value_t = 10u64)]
-    //    pub retry_seconds: u64,
+    /// Service to proxy to
+    #[arg(env = "SERVICE", short = 's', long, value_name = "NAME")]
+    pub service: String,
+
+    /// Port name of the service
+    #[arg(env = "PORT", long, value_name = "NAME")]
+    pub service_port: Option<String>,
+
+    /// Should sero inject itself into the services Endpoints?
+    #[arg(env, short = 'i', long)]
+    pub inject: bool,
 }

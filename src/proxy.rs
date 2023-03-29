@@ -1,25 +1,29 @@
 use crate::scaler::ScalerHandle;
 
 use anyhow::Result;
-use tokio::net::{TcpListener, TcpStream};
+use tokio::net::{TcpListener, TcpStream, ToSocketAddrs};
 use tracing::*;
 
 pub struct Proxy {
-    backend_address: String,
+    backend_host: String,
+    backend_port: u16,
     listener: TcpListener,
     scaler: ScalerHandle,
 }
 
 impl Proxy {
     pub async fn try_new(
-        listen_address: &str,
-        backend_address: &str,
+        listen_host: &str,
+        listen_port: u16,
+        backend_host: &str,
+        backend_port: u16,
         scaler: ScalerHandle,
     ) -> Result<Self> {
-        let listener = TcpListener::bind(listen_address).await?;
-        info!("Listening for TCP connections on {listen_address}, proxying connections to {backend_address}.");
+        let listener = TcpListener::bind((listen_host, listen_port)).await?;
+        info!("Listening for TCP connections on {listen_host}:{listen_port}, proxying connections to {backend_host}:{backend_port}.");
         Ok(Proxy {
-            backend_address: backend_address.to_owned(),
+            backend_host: backend_host.to_owned(),
+            backend_port,
             listener,
             scaler,
         })
@@ -28,13 +32,13 @@ impl Proxy {
     pub async fn run(self) {
         while let Ok((ingress, _)) = self.listener.accept().await {
             let scaler = self.scaler.clone();
-            let backend_address = self.backend_address.to_owned();
+            let backend = (self.backend_host.to_owned(), self.backend_port);
             tokio::spawn(async move {
                 // only connect if backend is up
                 if let Err(e) = scaler.ensure_up().await {
                     error!("Failed to ensure a serving backend, dropping connection: {e}");
                 } else {
-                    proxy_tcp_stream(ingress, backend_address).await;
+                    proxy_tcp_stream(ingress, backend).await;
                 }
             });
         }
@@ -42,8 +46,8 @@ impl Proxy {
 }
 
 /// Proxy a TCP Stream to a backend address
-async fn proxy_tcp_stream(mut ingress: TcpStream, backend_address: String) {
-    let mut egress = match TcpStream::connect(backend_address).await {
+async fn proxy_tcp_stream<A: ToSocketAddrs>(mut ingress: TcpStream, backend: A) {
+    let mut egress = match TcpStream::connect(backend).await {
         Ok(egress) => {
             trace!("Successfully connected to backend. Proxying connections.");
             egress
