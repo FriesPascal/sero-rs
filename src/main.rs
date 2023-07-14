@@ -49,7 +49,7 @@ async fn main() -> Result<()> {
             max_concurrency,
             &svc_name,
             &svc_port_name,
-            svc_port_number,
+            listen_port,
             client.clone(),
         )?)
     } else {

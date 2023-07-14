@@ -114,7 +114,7 @@ impl EndpointWatcher {
                     .metadata
                     .labels
                     .as_ref()
-                    .and_then(|labels| labels.get("endpointslices.sero.rs/service-name"))
+                    .and_then(|labels| labels.get("sero.rs/service-name"))
                     == Some(&self.name)
                 {
                     (sero + serving_ep, backend)

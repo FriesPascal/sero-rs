@@ -21,9 +21,9 @@ use tracing::*;
 
 struct Injector {
     name: String,
+    port: u16,
     svc_name: String,
     svc_port_name: String,
-    svc_port_number: u16,
     receiver: mpsc::Receiver<InjectorMessage>,
     client: Arc<Client>,
 }
@@ -33,7 +33,7 @@ impl Injector {
         receiver: mpsc::Receiver<InjectorMessage>,
         svc_name: &str,
         svc_port_name: &str,
-        svc_port_number: u16,
+        port: u16,
         client: Arc<Client>,
     ) -> Result<Self> {
         // read own hostname
@@ -41,9 +41,9 @@ impl Injector {
         let name = hostname.to_str().context("Hostname is not valid UTF8")?;
         Ok(Injector {
             name: name.to_owned(),
+            port,
             svc_name: svc_name.to_owned(),
             svc_port_name: svc_port_name.to_owned(),
-            svc_port_number,
             receiver,
             client,
         })
@@ -95,21 +95,13 @@ impl Injector {
                 "kubernetes.io/service-name".to_owned(),
                 self.svc_name.clone(),
             ),
-            (
-                "endpointslices.sero.rs/service-name".to_owned(),
-                self.svc_name.clone(),
-            ),
+            ("sero.rs/service-name".to_owned(), self.svc_name.clone()),
         ]);
-        let port = EndpointPort {
-            name: Some(self.svc_port_name.clone()),
-            port: Some(self.svc_port_number as i32),
-            ..Default::default()
-        };
         // create managed endpointslice (currently only IPv4)
         let ep_slice_ipv4 = EndpointSlice {
             address_type: "IPv4".to_owned(),
             metadata: ObjectMeta {
-                name: Some(self.name.clone()),
+                generate_name: Some(format!("{}-sero-", self.svc_name)),
                 owner_references: Some(vec![owner_ref]),
                 labels: Some(labels),
                 ..Default::default()
@@ -119,7 +111,11 @@ impl Injector {
                 target_ref: Some(target_ref),
                 ..Default::default()
             }],
-            ports: Some(vec![port]),
+            ports: Some(vec![EndpointPort {
+                name: Some(self.svc_port_name.clone()),
+                port: Some(self.port as i32),
+                ..Default::default()
+            }]),
         };
         let api: Api<EndpointSlice> = Api::default_namespaced((*self.client).clone());
         let params = PostParams {
@@ -132,10 +128,8 @@ impl Injector {
 
     async fn inject(&self) -> Result<()> {
         let api: Api<EndpointSlice> = Api::default_namespaced((*self.client).clone());
-        let selector = ListParams::default().labels(&format!(
-            "endpointslices.sero.rs/service-name={}",
-            self.svc_name
-        ));
+        let selector =
+            ListParams::default().labels(&format!("sero.rs/service-name={}", self.svc_name));
         let params = PatchParams::apply("injector.sero.rs").force();
         let patch = json_patch::Patch(vec![Add(AddOperation {
             path: "/metadata/labels/kubernetes.io/service-name".to_owned(),
@@ -159,10 +153,8 @@ impl Injector {
 
     async fn eject(&self) -> Result<()> {
         let api: Api<EndpointSlice> = Api::default_namespaced((*self.client).clone());
-        let selector = ListParams::default().labels(&format!(
-            "endpointslices.sero.rs/service-name={}",
-            self.svc_name
-        ));
+        let selector =
+            ListParams::default().labels(&format!("sero.rs/service-name={}", self.svc_name));
         let params = PatchParams::apply("injector.sero.rs").force();
         let patch = json_patch::Patch(vec![Remove(RemoveOperation {
             path: "/metadata/labels/kubernetes.io/service-name".to_owned(),
@@ -224,12 +216,11 @@ impl InjectorHandle {
         max_concurrency: usize,
         svc_name: &str,
         svc_port_name: &str,
-        svc_port_number: u16,
+        port: u16,
         client: Arc<Client>,
     ) -> Result<Self> {
         let (sender, receiver) = mpsc::channel(max_concurrency);
-        let injector =
-            Injector::try_new(receiver, svc_name, svc_port_name, svc_port_number, client)?;
+        let injector = Injector::try_new(receiver, svc_name, svc_port_name, port, client)?;
         tokio::spawn(injector.run());
         Ok(InjectorHandle { sender })
     }
